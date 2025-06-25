@@ -84,13 +84,14 @@ from pydantic import BaseModel
 import requests
 import os
 from PyPDF2 import PdfReader
-from urllib.parse import urlparse
+from urllib.parse import urlparse, parse_qs
 
 app = FastAPI()
 
 class FileInput(BaseModel):
     url: str  # PDF link from Google Drive or OneDrive
 
+# Improved keyword-based scoring
 def calculate_star_rating(text: str) -> float:
     text = text.lower()
     score = 0
@@ -120,32 +121,51 @@ def calculate_star_rating(text: str) -> float:
     rating = round((matched_score / max_score) * 5, 1) if max_score else 0.0
     return rating
 
-def extract_file_url(drive_link: str) -> str:
-    if "drive.google.com" in drive_link:
+# ✅ Improved auto-conversion of Google Drive and OneDrive links
+def extract_file_url(link: str) -> str:
+    if "drive.google.com" in link:
+        # Handle different types of Drive URLs
         try:
-            file_id = drive_link.split('/d/')[1].split('/')[0]
-            return f"https://drive.google.com/uc?export=download&id={file_id}"
-        except IndexError:
-            raise HTTPException(status_code=400, detail="Invalid Google Drive link format.")
-    elif "1drv.ms" in drive_link or "onedrive.live.com" in drive_link:
-        try:
-            if "1drv.ms" in drive_link:
-                response = requests.get(drive_link, allow_redirects=True)
-                drive_link = response.url
+            if "/file/d/" in link:
+                # Format: https://drive.google.com/file/d/FILE_ID/view
+                file_id = link.split("/file/d/")[1].split("/")[0]
+            elif "open?id=" in link:
+                # Format: https://drive.google.com/open?id=FILE_ID
+                query = parse_qs(urlparse(link).query)
+                file_id = query.get("id", [None])[0]
+            else:
+                raise HTTPException(status_code=400, detail="Unsupported Google Drive URL format.")
 
-            parsed = urlparse(drive_link)
+            if not file_id:
+                raise HTTPException(status_code=400, detail="Could not extract file ID from Google Drive URL.")
+
+            return f"https://drive.google.com/uc?export=download&id={file_id}"
+        except Exception:
+            raise HTTPException(status_code=400, detail="Invalid Google Drive link format.")
+
+    elif "1drv.ms" in link or "onedrive.live.com" in link:
+        try:
+            if "1drv.ms" in link:
+                # Short link that redirects to actual OneDrive URL
+                response = requests.get(link, allow_redirects=True)
+                link = response.url
+
+            parsed = urlparse(link)
             base_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
             return base_url + "?download=1"
         except Exception:
             raise HTTPException(status_code=400, detail="Invalid OneDrive link format.")
+
     else:
         raise HTTPException(status_code=400, detail="Only Google Drive and OneDrive links are supported.")
 
 @app.post("/calculate-star-rating")
 def calculate_rating(input: FileInput):
     try:
+        # Auto-convert to direct download link
         download_url = extract_file_url(input.url)
 
+        # Robust session with retry
         session = requests.Session()
         adapter = requests.adapters.HTTPAdapter(max_retries=3)
         session.mount("https://", adapter)
@@ -154,6 +174,7 @@ def calculate_rating(input: FileInput):
         if response.status_code != 200:
             raise HTTPException(status_code=400, detail="Failed to download file from the link.")
 
+        # Temporarily save and read the PDF
         temp_path = "temp_eoc.pdf"
         with open(temp_path, "wb") as f:
             f.write(response.content)
@@ -162,6 +183,7 @@ def calculate_rating(input: FileInput):
         text = " ".join([page.extract_text() or "" for page in reader.pages])
         os.remove(temp_path)
 
+        # Calculate star rating from PDF content
         rating = calculate_star_rating(text)
         return JSONResponse(content={"star_rating": rating})
 
