@@ -77,21 +77,24 @@
 #         raise HTTPException(status_code=500, detail=str(e))
 
 
-from fastapi import FastAPI, HTTPException, Query
+
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 import requests
 import os
-import ssl
 from PyPDF2 import PdfReader
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlparse
 
 app = FastAPI()
+
+class FileInput(BaseModel):
+    url: str  # PDF link from Google Drive or OneDrive
 
 def calculate_star_rating(text: str) -> float:
     text = text.lower()
     score = 0
 
-    # Medicare Star Rating categories with weights (sum should be 100 for weighted average)
     keywords = {
         "preventive care": 10,
         "screening": 10,
@@ -138,10 +141,10 @@ def extract_file_url(drive_link: str) -> str:
     else:
         raise HTTPException(status_code=400, detail="Only Google Drive and OneDrive links are supported.")
 
-@app.get("/get-star-rating/")
-def get_star_rating(drive_link: str = Query(..., description="Public Google Drive or OneDrive share link to EOC PDF")):
+@app.post("/calculate-star-rating")
+def calculate_rating(input: FileInput):
     try:
-        download_url = extract_file_url(drive_link)
+        download_url = extract_file_url(input.url)
 
         session = requests.Session()
         adapter = requests.adapters.HTTPAdapter(max_retries=3)
